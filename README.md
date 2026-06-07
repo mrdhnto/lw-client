@@ -8,7 +8,7 @@ via WebSocket, receives scan commands, hashes files locally, and sends results b
 ### From GitHub
 
 ```bash
-npm install -g git+https://github.com/YOUR_USER/lw-client.git
+npm install -g git+https://github.com/mrdhnto/lw-client.git
 ```
 
 ### Local development
@@ -23,7 +23,7 @@ npm link
 ### Run without installing
 
 ```bash
-npx github:YOUR_USER/lw-client -u <url> -t <token>
+npx github:mrdhnto/lw-client -u <url> -t <token>
 ```
 
 ## Usage
