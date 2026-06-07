@@ -1,0 +1,13 @@
+{
+  "name": "lw-client",
+  "version": "1.0.0",
+  "description": "Library Watcher — remote scanning CLI client",
+  "type": "module",
+  "bin": {
+    "lw-client": "./index.js"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "ws": "^8.18.0"
+  }
+}
