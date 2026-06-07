@@ -1,7 +1,8 @@
 # LW Client
 
-Library Watcher remote scanning CLI client. Connects to a Library Watcher server
-via WebSocket, receives scan commands, hashes files locally, and sends results back.
+Library Watcher is **self-hosted** — you run the server on your own machine over your local network.
+This CLI client connects to that server via WebSocket, receives scan commands, hashes files locally,
+and sends results back. The client must be able to reach the server over your network.
 
 ## Installation
 
@@ -35,6 +36,8 @@ lw-client -u ws://your-server:8080/api/client/ws -t <token>
 ```
 
 Saves the URL and token to `~/.lw-client.json` and connects immediately.
+
+> **Note:** The server must be running and accessible from this machine over your network.
 
 ### Reconnect (after restart)
 
