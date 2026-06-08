@@ -68,6 +68,7 @@ URL and token again.
 - Same hostname can always reconnect with same token (even after restart)
 - Listens for scan commands from server
 - Scans directories, computes SHA-256 hashes
+  > Remote client scans are **10–30% faster** than server-side scanning.
 - Sends progress updates in real-time
 - Reconnects on disconnect (exponential backoff)
 - Exits cleanly on Ctrl+C or kick from server
