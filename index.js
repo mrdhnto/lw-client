@@ -109,7 +109,9 @@ function start(url, token) {
     })
 
     ws.on('error', (err) => {
-      console.error('WebSocket error:', err.message)
+      const msg = err.message || err.code || err.toString() || 'Unknown connection error'
+      console.error(`WebSocket error: ${msg}`)
+      console.error(`  Ensure the server is running and the URL is correct: ${url}`)
     })
   }
 
@@ -117,6 +119,11 @@ function start(url, token) {
     switch (msg.type) {
       case 'handshake-ok': {
         console.log(`Authenticated as client: ${msg.clientId} (${msg.hostname})`)
+        if (msg.tempCreds) {
+          console.log(`\n  Temporary account created — log in at the web UI:`)
+          console.log(`    Username: ${msg.tempCreds.username}`)
+          console.log(`    Password: ${msg.tempCreds.password}\n`)
+        }
         currentTaskId = null
         break
       }
