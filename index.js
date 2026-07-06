@@ -6,20 +6,50 @@ import { scanPath } from './scanner.js'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
+import { machineIdSync } from 'node-machine-id'
+import * as dotenv from 'dotenv'
+import keytar from 'keytar'
+
+// Load .env if present
+dotenv.config({ path: path.join(process.cwd(), '.env') })
 
 const CONFIG_PATH = path.join(os.homedir(), '.lw-client.json')
 
-function loadConfig() {
+async function loadConfig() {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
-  } catch {
+    let config = null
+    if (fs.existsSync(CONFIG_PATH)) {
+      config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
+    }
+    
+    // Migrate legacy plaintext token if it exists
+    if (config && config.token) {
+      await keytar.setPassword('library-watcher', 'client-token', config.token)
+      const migratedConfig = { url: config.url }
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(migratedConfig, null, 2))
+      return config
+    }
+    
+    if (config && config.url) {
+      const secureToken = await keytar.getPassword('library-watcher', 'client-token')
+      return { url: config.url, token: secureToken }
+    }
+    return null
+  } catch (err) {
+    console.error('Failed to load config:', err)
     return null
   }
 }
 
-function saveConfig(data) {
+async function saveConfig(data) {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2))
+  
+  if (data.token) {
+    await keytar.setPassword('library-watcher', 'client-token', data.token)
+  }
+  
+  const publicConfig = { url: data.url }
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(publicConfig, null, 2))
 }
 
 const program = new Command()
@@ -29,10 +59,10 @@ program
   .description('Library Watcher remote scanning client')
   .option('-u, --url <url>', 'WebSocket server URL (e.g. ws://192.168.1.1:8080/api/client/ws)')
   .option('-t, --token <token>', 'Authentication token')
-  .action(() => {
+  .action(async () => {
     const opts = program.opts()
     if (opts.url && opts.token) {
-      saveConfig({ url: opts.url, token: opts.token })
+      await saveConfig({ url: opts.url, token: opts.token })
       start(opts.url, opts.token)
     } else if (opts.url || opts.token) {
       console.error('Both --url and --token are required for first-time setup')
@@ -45,10 +75,10 @@ program
 program
   .command('connect')
   .description('Connect using saved configuration')
-  .action(() => {
-    const config = loadConfig()
+  .action(async () => {
+    const config = await loadConfig()
     if (!config || !config.url || !config.token) {
-      console.error('No saved configuration found. Run: lw-client -u <url> -t <token>')
+      console.error('No saved configuration or token found. Run: lw-client -u <url> -t <token>')
       process.exit(1)
     }
     start(config.url, config.token)
@@ -56,24 +86,118 @@ program
 
 program.parse(process.argv)
 
-function start(url, token) {
+async function start(wsUrl, tokenOrRefresh) {
+  // Determine if we should force WSS vs WS
+  const isForceWss = process.env.FORCE_WSS === 'true'
+  const isDev = process.env.NODE_ENV === 'development'
+  
+  // Format URL properly
+  let parsedUrl
+  let url = wsUrl
+  try {
+    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+      const defaultProtocol = isForceWss || !isDev ? 'wss://' : 'ws://'
+      url = `${defaultProtocol}${url}`
+    }
+    
+    if (isForceWss && url.startsWith('ws://')) {
+      url = url.replace('ws://', 'wss://')
+    }
+    parsedUrl = new URL(url)
+  } catch (e) {
+    console.error('Invalid URL provided:', url)
+    process.exit(1)
+  }
+
+  const httpUrl = url.replace('ws://', 'http://').replace('wss://', 'https://').replace('/api/client/ws', '')
+  let hardwareId = 'unknown'
+
+  try {
+    hardwareId = machineIdSync()
+  } catch (err) {
+    console.error('Warning: Failed to generate hardware fingerprint:', err.message)
+  }
+
+  // Auth logic: Exchange token for JWT
+  let accessToken = null
+  let tempCreds = null
+
+  async function authenticate() {
+    try {
+      // If we are connecting normally, read refresh token from keytar
+      let refreshToken = await keytar.getPassword('library-watcher', 'client-token')
+      let isFirstTime = false
+
+      // If tokenOrRefresh is provided from command line, and it's not the refresh token we just loaded
+      if (tokenOrRefresh && tokenOrRefresh !== refreshToken) {
+        isFirstTime = true
+      }
+
+      if (isFirstTime) {
+        console.log('Authenticating with registration token...')
+        const res = await fetch(`${httpUrl}/api/client/auth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: tokenOrRefresh, hostname: os.hostname(), hardwareId })
+        })
+        
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.message || 'Authentication failed')
+        }
+        
+        const data = await res.json()
+        await keytar.setPassword('library-watcher', 'client-token', data.refreshToken)
+        accessToken = data.accessToken
+        tempCreds = data.tempCreds
+        
+        // Remove tokenOrRefresh so future reconnects use the refresh token
+        tokenOrRefresh = null
+      } else if (refreshToken) {
+        console.log('Refreshing session token...')
+        const res = await fetch(`${httpUrl}/api/client/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken })
+        })
+        
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          throw new Error(err.message || 'Failed to refresh token')
+        }
+        
+        const data = await res.json()
+        accessToken = data.accessToken
+      } else {
+        throw new Error('No valid token or refresh token found')
+      }
+    } catch (err) {
+      console.error('Authentication error:', err.message)
+      process.exit(1)
+    }
+  }
+
   const MAX_RECONNECT_DELAY = 30000
   const BASE_RECONNECT_DELAY = 1000
   let reconnectAttempt = 0
   let intentionalClose = false
   let currentTaskId = null
+  let hasShownCreds = false
 
-  function connect() {
+  async function connect() {
+    if (!accessToken) {
+      await authenticate()
+    }
+
     const ws = new WebSocket(url)
 
     ws.on('open', () => {
-      console.log('Connected to server')
+      console.log('Connected to server, sending handshake...')
       reconnectAttempt = 0
 
       ws.send(JSON.stringify({
         type: 'handshake',
-        token: token,
-        hostname: os.hostname()
+        token: accessToken
       }))
     })
 
@@ -97,6 +221,7 @@ function start(url, token) {
     ws.on('close', (code, reason) => {
       console.log('Disconnected from server')
       currentTaskId = null
+      accessToken = null // Force re-authentication on reconnect
 
       if (!intentionalClose) {
         const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempt), MAX_RECONNECT_DELAY)
@@ -119,10 +244,11 @@ function start(url, token) {
     switch (msg.type) {
       case 'handshake-ok': {
         console.log(`Authenticated as client: ${msg.clientId} (${msg.hostname})`)
-        if (msg.tempCreds) {
+        if (tempCreds && !hasShownCreds) {
           console.log(`\n  Temporary account created — log in at the web UI:`)
-          console.log(`    Username: ${msg.tempCreds.username}`)
-          console.log(`    Password: ${msg.tempCreds.password}\n`)
+          console.log(`    Username: ${tempCreds.username}`)
+          console.log(`    Password: ${tempCreds.password}\n`)
+          hasShownCreds = true
         }
         currentTaskId = null
         break
@@ -130,7 +256,10 @@ function start(url, token) {
 
       case 'error': {
         console.error('Server error:', msg.message)
-        if (msg.message.includes('token') || msg.message.includes('auth') || msg.message.includes('claimed')) {
+        // If it's an auth error on the WebSocket, don't intentionalClose, let it reconnect and refresh the token
+        if (msg.message.includes('auth') || msg.message.includes('token')) {
+            console.log('Session expired, will attempt to refresh...')
+        } else if (msg.message.includes('claimed') || msg.message.includes('Hardware fingerprint')) {
           intentionalClose = true
           ws.close()
         }

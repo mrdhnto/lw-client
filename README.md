@@ -32,10 +32,11 @@ npx github:mrdhnto/lw-client -u <url> -t <token>
 ### First-time setup
 
 ```bash
-lw-client -u ws://your-server:8080/api/client/ws -t <token>
+# Note: Use wss:// for secure connections, ws:// for local IPs
+lw-client -u wss://your-server.com/api/client/ws -t <token>
 ```
 
-Saves the URL and token to `~/.lw-client.json` and connects immediately.
+Saves the URL configuration to `~/.lw-client.json`. The token provided is a one-time registration token that is securely exchanged for a session and stored in your OS **keychain** (using `keytar`).
 
 > **Note:** The server must be running and accessible from this machine over your network.
 
@@ -45,8 +46,7 @@ Saves the URL and token to `~/.lw-client.json` and connects immediately.
 lw-client connect
 ```
 
-Reads saved config from `~/.lw-client.json` and reconnects. No need to type
-URL and token again.
+Reads the saved URL from `~/.lw-client.json` and securely retrieves your token from the OS keychain. No need to type URL and token again.
 
 ## Options
 
@@ -63,9 +63,11 @@ URL and token again.
 
 ## Behavior
 
-- Connects to server and authenticates with token + machine hostname
-- Token is one-time-use — first hostname to connect claims it
-- Same hostname can always reconnect with same token (even after restart)
+- **Secure Connection:** Automatically defaults to `wss://` in production or `ws://` in development (based on `NODE_ENV` in a `.env` file). You can also explicitly force it using `FORCE_WSS=true` in `.env`.
+- **Hardware Binding:** Connects to server and authenticates with your token. The CLI automatically generates a secure **hardware fingerprint**.
+- Token is one-time-use — the first machine to connect binds the token permanently to its hardware ID. Behind the scenes, it's exchanged for short-lived, rotating **JWT Access Tokens**.
+- Same machine can always reconnect automatically (even after restart). Spoofing the hostname from another machine will be rejected due to hardware mismatch.
+- **Auto-healing Sessions:** If a session expires while connected, the CLI will automatically fetch a new JWT and reconnect seamlessly.
 - Listens for scan commands from server
 - Scans directories, computes SHA-256 hashes
   > Remote client scans are **10–30% faster** than server-side scanning.
